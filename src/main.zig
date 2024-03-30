@@ -30,7 +30,7 @@ const full_stop_mask = [_]ThreadInfo{stop_mask} ** MAX_THREADS;
 const full_stop_mask_int: ThreadInfoInt = @as(*ThreadInfoInt, @constCast(@alignCast(@ptrCast(&full_stop_mask)))).*;
 
 /// The basic length of a read buffer. The thread might be told to use less because the whole buffer may not have been used.
-const READ_BUFFER_SIZE = 1 << 16;
+const READ_BUFFER_SIZE = 1 << 20;
 
 pub fn main() !void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{
@@ -55,7 +55,7 @@ pub fn main() !void {
     const threads = (std.Thread.getCpuCount() catch 1) - 1;
     assert(threads <= MAX_THREADS); // If this fails, increase MAX_THREADS
 
-    var read_buf = try allocator.alloc(u8, READ_BUFFER_SIZE * threads);
+    var read_buf = try allocator.alignedAlloc(u8, mem.page_size, READ_BUFFER_SIZE * threads);
 
     var threads_info: [MAX_THREADS]ThreadInfo = full_stop_mask;
     var threads_info_int: *ThreadInfoInt = @alignCast(@ptrCast(&threads_info));
@@ -79,23 +79,35 @@ pub fn main() !void {
             for (0..threads) |idx| thread_list[idx].join();
         }
 
-        var leftover: usize = 0;
-        while (true) {
-            var thread: usize = 0;
+        var time = try std.time.Timer.start();
+        defer {
+            stdout.print("{},", .{time.read()}) catch {};
+            bw.flush() catch {};
+        }
 
+        var leftover: usize = 0;
+        var thread: usize = 0;
+        while (true) {
+
+            // search for a thread which is done
             while (true) : (thread += 1) {
-                if (thread > threads) thread = 0;
+                if (thread >= threads) {
+                    Thread.yield() catch {};
+                    thread = 0;
+                }
+                assert(thread < threads); // shouldn't be possible
 
                 // if the thread is done processing, break
                 if (threads_info[thread] & read_mask == 0) break;
+                //std.log.info("testing thread: {:2} with {b}", .{ thread, threads_info[thread] });
             }
 
-            assert(thread <= threads); // shouldn't be possible
+            assert(thread < threads); // shouldn't be possible
 
             const start_idx = READ_BUFFER_SIZE * thread;
             var end_idx = start_idx + READ_BUFFER_SIZE;
 
-            std.log.info("buf len: {}, start: {}, end: {}", .{ read_buf.len, start_idx, end_idx });
+            //std.log.info("buf len: {}, start: {}, end: {}", .{ read_buf.len, start_idx, end_idx });
 
             assert(start_idx < read_buf.len);
             assert(end_idx <= read_buf.len); // that would be bad
@@ -106,7 +118,6 @@ pub fn main() !void {
             bytes_read += bytes;
 
             if (bytes == 0) {
-                threads_info[thread] = stop_mask | read_mask;
                 break;
             }
 
@@ -114,9 +125,10 @@ pub fn main() !void {
 
             leftover = valid_length - mem.lastIndexOfScalar(u8, buf[0..valid_length], '\n').? - 1;
 
-            assert(leftover <= std.math.maxInt(u6)); // if not, the leftover is too bit
+            assert(leftover <= std.math.maxInt(u6)); // if not, the leftover is too big
 
             threads_info[thread] = @as(u8, @intCast(leftover)) | stop_mask | read_mask;
+            //std.log.info("\tthread_info: {b}, leftover: {}", .{ threads_info[thread], leftover });
 
             if (leftover > 1) {
                 const leftover_buf = buf[buf.len - leftover ..];
@@ -128,27 +140,30 @@ pub fn main() !void {
                 @memcpy(read_buf[end_idx .. end_idx + leftover], leftover_buf);
             }
         }
-
-        std.log.info("waiting for threads...", .{});
     }
 
     std.log.info("threads_info: {b}", .{threads_info_int.*});
-    assert(threads_info_int.* == 0); // nothing good, some threads didn't read
+    assert(threads_info_int.* & (~stop_mask) == 0); // if there are non-stop bits left, then some threads didn't read. that's bad.
 
-    try stdout.print("bytes read: {}\n", .{bytes_read});
-    try bw.flush();
+    //try stdout.print("bytes read: {}\n", .{bytes_read});
+    //try bw.flush();
 
-    const file_bytes = (try file.metadata()).size();
-    assert(bytes_read == file_bytes); // didn't read the whole file if failed
+    const file_size: usize = (try file.metadata()).size();
+    assert(bytes_read == file_size); // didn't read the whole file if failed
 }
 
 /// The main loop of each non-reading thread
 fn thread_loop(thread_id: usize, thread_info: *ThreadInfo, buffer: []const u8) void {
     Thread.yield() catch {};
 
+    std.log.debug("thread {:2} started", .{thread_id});
     while (true) {
+        const info = thread_info.*;
+
         // if the thread should read.
-        if (thread_info.* & read_mask == 1) { // process data
+        if (info & read_mask > 1) { // process data
+
+            //std.log.debug("thread {} finshed reading", .{thread_id});
 
             const leftover_bits = @as(usize, thread_info.* & leftover_mask);
 
@@ -156,9 +171,12 @@ fn thread_loop(thread_id: usize, thread_info: *ThreadInfo, buffer: []const u8) v
 
             _ = valid_buf;
 
-            thread_info.* ^= read_mask; // reset the read bit to say the processing is over.
-        }
-        if (thread_info.* & stop_mask == 0) break; // stop the thread
+            // process data...
+
+            if (info & stop_mask == 0) break; // stop the thread
+
+            thread_info.* = stop_mask; // reset the info to say it is done.
+        } else if (info & stop_mask == 0) break; // stop the thread
 
         Thread.yield() catch {};
     }
@@ -166,9 +184,9 @@ fn thread_loop(thread_id: usize, thread_info: *ThreadInfo, buffer: []const u8) v
     std.log.info("thread {} finished", .{thread_id});
 }
 
-const parse = @import("parse.zig");
+//const parse = @import("parse.zig");
 
-const HashMap = parse.HashMap;
+//const HashMap = parse.HashMap;
 
 const std = @import("std");
 const fs = std.fs;
