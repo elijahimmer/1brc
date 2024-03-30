@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = .ReleaseFast; // .ReleaseFast
+    const optimize = .Debug; // .ReleaseFast
 
     const exe = b.addExecutable(.{
         .name = "1brc",

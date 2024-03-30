@@ -1,17 +1,3 @@
-pub fn parse_lines(map: *HashMap, str: []const u8) void {
-    std.log.info("thread: {}, size: {}", .{ Thread.getCurrentId(), str.len });
-    var iter = mem.splitScalar(u8, str, '\n');
-    var i: usize = 0;
-    while (iter.next()) |line| {
-        if (line.len == 0) break;
-        i += 1;
-        assert(mem.count(u8, line, ";") == 1);
-        parse_line(map, line) catch {
-            std.log.err("Thread: {}, Failed to parse line: '{}'\n", .{ Thread.getCurrentId(), line });
-        };
-    }
-}
-
 pub fn parse_number(str: []const u8) i64 {
     assert(str.len >= 3); // smallest number is 0.0
     assert(str.len <= 5); // largest number is -00.0
