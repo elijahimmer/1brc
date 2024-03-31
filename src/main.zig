@@ -11,23 +11,11 @@ const ThreadInfo = struct {
 /// The array that stores the info of every thread.
 const ThreadInfoArr = [MAX_THREADS]ThreadInfo;
 
-///// ThreadInfoArr but as a integer to quickly set bits on every thread at once.
-//const ThreadInfoInt = std.meta.Int(.unsigned, @typeInfo(ThreadInfo).Int.bits * MAX_THREADS);
-
-///// The array that holds the starting value, where all threads are set to be alive.
-//const full_stop_mask = [_]ThreadInfo{stop_mask} ** MAX_THREADS;
-//
-///// The stop_mask array, but as a int that you can kill all threads at once.
-//const full_stop_mask_int: ThreadInfoInt = @as(*ThreadInfoInt, @constCast(@alignCast(@ptrCast(&full_stop_mask)))).*;
-
-/// The number of bits to represent every index in the read buffer.
-const read_buffer_bits = 8;
-
 /// the maximum size for a read buffer
-const read_buffer_size = 1 << read_buffer_bits;
+const read_buffer_size = 1 << 8;
 
 /// the type of a read buffer index.
-const readBufferIndex = meta.Int(.unsigned, read_buffer_bits);
+const readBufferIndex = meta.Int(.unsigned, math.log2(read_buffer_size));
 
 pub fn main() !void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{
@@ -149,6 +137,8 @@ pub fn main() !void {
                 leftover = null;
             }
         }
+
+        std.log.info("waiting for threads...", .{});
     }
 
     for (0..threads) |thread| assert(thread_info[thread].should_read == false); // if some threads still have to read, that's bad.
