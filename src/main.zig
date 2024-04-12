@@ -1,21 +1,21 @@
 /// The maximum number of threads to that are supported.
 const MAX_THREADS = 16;
 
+/// the maximum size for a read buffer
+const read_buffer_size = 1 << 16;
+
+/// the type of a read buffer index.
+const readBufferIndex = meta.Int(.unsigned, math.log2(read_buffer_size));
+
+/// The array that stores the info of every thread.
+const ThreadInfoArr = [MAX_THREADS]ThreadInfo;
+
 /// The info each thread gets.
 const ThreadInfo = struct {
     should_stop: bool = false,
     should_read: bool = false,
     read_to: readBufferIndex = 0,
 };
-
-/// The array that stores the info of every thread.
-const ThreadInfoArr = [MAX_THREADS]ThreadInfo;
-
-/// the maximum size for a read buffer
-const read_buffer_size = 1 << 8;
-
-/// the type of a read buffer index.
-const readBufferIndex = meta.Int(.unsigned, math.log2(read_buffer_size));
 
 pub fn main() !void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{
@@ -37,19 +37,18 @@ pub fn main() !void {
     var file = try fs.cwd().openFile("test.txt", .{}); // measurements.txt
     defer file.close();
 
-    var map = HashMap.init(allocator);
-    defer map.deinit();
+    var map = .{ .mutex = .{}, .map = HashMapContent.init(allocator) };
+    defer map.map.deinit();
 
-    try map.ensureTotalCapacity(1 << 20);
+    try map.map.ensureTotalCapacity(1 << 20);
 
-    const threads = 1; //(std.Thread.getCpuCount() catch 2) - 1;
+    const threads = 2; //(std.Thread.getCpuCount() catch 2) - 1;
     assert(threads > 0);
     assert(threads <= MAX_THREADS); // If this fails, increase MAX_THREADS
 
     var read_buf = try allocator.alignedAlloc(u8, mem.page_size, read_buffer_size * threads);
 
     var thread_info: [MAX_THREADS]ThreadInfo = [_]ThreadInfo{.{}} ** MAX_THREADS;
-
     var thread_list: [MAX_THREADS]Thread = undefined;
 
     var bytes_read: usize = 0;
@@ -78,20 +77,13 @@ pub fn main() !void {
         var leftover: ?[]u8 = null;
         var thread: usize = 0;
         while (true) {
-
             // search for a thread which is done
             while (true) : (thread += 1) {
-                if (thread >= threads) {
-                    thread = 0;
-                }
-                assert(thread < threads); // shouldn't be possible
+                if (thread >= threads) thread = 0;
 
                 // if the thread is done processing, break
                 if (!thread_info[thread].should_read) break;
-                //std.log.info("testing thread: {:2} with {b}", .{ thread, thread_info[thread] });
             }
-
-            assert(thread < threads); // shouldn't be possible
 
             const start_idx = read_buffer_size * thread;
             const end_idx = start_idx + read_buffer_size;
@@ -106,7 +98,7 @@ pub fn main() !void {
 
                 leftover_bytes = left.len;
 
-                assert(mem.count(u8, left, "\n") == 0);
+                if (std.debug.runtime_safety) assert(mem.count(u8, left, "\n") == 0);
 
                 @memcpy(read_buf[start_idx .. start_idx + left.len], left);
             }
@@ -154,53 +146,49 @@ pub fn main() !void {
 fn thread_loop(thread_id: usize, thread_info: *ThreadInfo, map: *HashMap, buffer: []const u8) void {
     Thread.yield() catch {};
 
-    //std.log.debug("thread {:2} started", .{thread_id});
     while (true) {
         const info = thread_info.*;
 
         // if the thread should read.
         if (info.should_read) { // process data
-
-            //std.log.debug("thread {} finshed reading", .{thread_id});
+            defer thread_info.*.should_read = false; // reset the info to say it is done.
 
             const read_to = info.read_to;
-            if (read_to == 0) break;
+            if (info.read_to == 0) break;
+
+            assert(read_to < buffer.len); // so that we don't over-read
 
             var valid_buf = buffer[0..read_to];
 
-            const last_semi = mem.lastIndexOfLinear(u8, valid_buf, ";").?;
-            const last_newline = mem.lastIndexOfLinear(u8, valid_buf, "\n").?;
+            if (std.debug.runtime_safety) {
+                const last_semi = mem.lastIndexOfLinear(u8, valid_buf, ";").?;
+                const last_newline = mem.lastIndexOfLinear(u8, valid_buf, "\n").?;
 
-            assert(last_semi > last_newline);
-
-            var iter = mem.splitScalar(u8, valid_buf, '\n');
-            var i: usize = 0;
-            while (iter.next()) |line| {
-                if (line.len == 0) break;
-                i += 1;
-                //std.log.err("thread {:2}, line {}: '{s}'", .{ thread_id, i, line });
-                const semi_count = mem.count(u8, line, ";");
-                assert(semi_count > 0);
-                assert(semi_count < 2);
-
-                parse.parse_line(map, line) catch |err| {
-                    std.log.err("thread {:2}, Failed to parse line: '{s}' with {}", .{ thread_id, line, @errorName(err) });
-                };
+                assert(last_semi > last_newline);
             }
 
-            thread_info.* = .{}; // reset the info to say it is done.
+            var iter = mem.splitScalar(u8, valid_buf, '\n');
+            while (iter.next()) |line| {
+                if (line.len == 0) break;
+
+                if (std.debug.runtime_safety) assert(mem.count(u8, line, ";") == 1);
+
+                parse.parse_line(map, line) catch |err| {
+                    std.log.err("thread {:2}, Failed to parse line: '{s}' with {s}", .{ thread_id, line, @errorName(err) });
+                };
+            }
         }
-        if (info.should_stop) break; // stop the thread if it should be stopped.
+
+        if (info.should_stop) break;
 
         Thread.yield() catch {};
     }
-
-    //std.log.debug("thread {:2} finished", .{thread_id});
 }
 
 const parse = @import("parse.zig");
 
 const HashMap = parse.HashMap;
+const HashMapContent = parse.HashMapContent;
 
 const std = @import("std");
 const fs = std.fs;
