@@ -4,7 +4,7 @@ const root_src = "src/main.zig";
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = .Debug; // .ReleaseFast
+    const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
         .name = "1brc",

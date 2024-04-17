@@ -46,7 +46,7 @@ const ParseLineError = error{
     @"No Semicolon",
     @"Too Many Semicolons",
     @"No Name",
-} || ParseNumberError; // || mem.Allocator.Error;
+} || ParseNumberError;
 
 pub fn parse_line(map: *HashMap, line: []const u8) ParseLineError!void {
     if (runtime_safety) {

@@ -20,9 +20,8 @@ pub fn main() !void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{
         .thread_safe = false,
     }){};
-
-    // who needs to deallocate? :)
     defer _ = gpalloc.deinit();
+
     var arena = std.heap.ArenaAllocator.init(gpalloc.allocator());
     const allocator = arena.allocator();
     defer arena.deinit();
@@ -34,8 +33,7 @@ pub fn main() !void {
     var file = try fs.cwd().openFile("test.txt", .{}); // measurements.txt
     defer file.close();
 
-    var map = HashMap{};
-
+    var map: HashMap = .{};
     try map.map.ensureTotalCapacity(allocator, 1 << 18);
 
     const threads = (std.Thread.getCpuCount() catch 2) - 1;
