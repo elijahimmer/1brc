@@ -29,12 +29,13 @@ pub fn main() !void {
     const stdout_file = std.io.getStdOut().writer();
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();
+    _ = stdout;
 
-    var file = try fs.cwd().openFile("test.txt", .{}); // measurements.txt
+    var file = try fs.cwd().openFile("measurements.txt", .{}); // measurements.txt
     defer file.close();
 
     var map: HashMap = .{};
-    try map.map.ensureTotalCapacity(allocator, 1 << 18);
+    try map.map.ensureTotalCapacity(allocator, 1 << 24);
 
     const threads = (std.Thread.getCpuCount() catch 2) - 1;
     assert(threads > 0);
@@ -49,17 +50,11 @@ pub fn main() !void {
 
     { // thread scope
         for (0..threads) |idx| {
-            thread_list[idx] = try Thread.spawn(.{}, thread_loop, .{ idx, &thread_info[idx], &map, &read_buf[idx] });
+            thread_list[idx] = try Thread.spawn(.{ .allocator = allocator }, thread_loop, .{ idx, &thread_info[idx], &map, &read_buf[idx] });
         }
         defer {
             for (0..threads) |idx| thread_info[idx].should_stop = true;
             for (0..threads) |idx| thread_list[idx].join();
-        }
-
-        var time = try std.time.Timer.start();
-        defer {
-            stdout.print("{},", .{time.read()}) catch {};
-            bw.flush() catch {};
         }
 
         var leftover: ?[]u8 = null;
@@ -79,7 +74,7 @@ pub fn main() !void {
             // copy over leftover bytes
             const leftover_bytes: usize = blk: {
                 if (leftover) |left| {
-                    std.log.debug("leftover: '{s}'", .{left});
+                    std.log.info("leftover: '{s}'", .{left});
                     assert(left.len <= math.maxInt(readBufferIndex)); // if not, the leftover is too big
 
                     // leftover cannot have a newline
@@ -105,7 +100,6 @@ pub fn main() !void {
             const valid_buf = buffer[0..valid_length];
 
             const last_newline = mem.lastIndexOfScalar(u8, valid_buf, '\n').?;
-            assert(last_newline <= math.maxInt(readBufferIndex)); // shouldn't be possible
 
             // alert thread
             thread_info[thread].should_read = @intCast(last_newline);
@@ -122,16 +116,16 @@ pub fn main() !void {
         std.log.info("waiting for threads...", .{});
     }
 
+    std.log.info("stopping ...", .{});
     for (0..threads) |thread| assert(thread_info[thread].should_read == null); // if some threads still have to read, that's bad.
+    for (0..threads) |thread| assert(thread_info[thread].should_stop); // make sure they all stop
 
-    const file_size: usize = (try file.metadata()).size();
-    assert(bytes_read == file_size); // didn't read the whole file if failed
+    //const file_size: usize = (try file.metadata()).size();
+    //assert(bytes_read == file_size); // didn't read the whole file if failed
 }
 
 /// The main loop of each non-reading thread
 fn thread_loop(thread_id: usize, thread_info: *ThreadInfo, map: *HashMap, buffer: *[read_buffer_size]u8) void {
-    Thread.yield() catch {};
-
     while (true) {
         const info = thread_info.*;
 
@@ -156,7 +150,7 @@ fn thread_loop(thread_id: usize, thread_info: *ThreadInfo, map: *HashMap, buffer
 
         if (info.should_stop) break;
 
-        //Thread.yield() catch {};
+        Thread.yield() catch {};
     }
 }
 
