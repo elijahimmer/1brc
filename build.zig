@@ -1,12 +1,14 @@
 const std = @import("std");
 
+const root_src = "src/main.zig";
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = .Debug; // .ReleaseFast
 
     const exe = b.addExecutable(.{
         .name = "1brc",
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = root_src },
         .target = target,
         .optimize = optimize,
     });
@@ -25,7 +27,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = root_src },
         .target = target,
         .optimize = optimize,
     });

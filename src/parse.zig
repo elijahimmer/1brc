@@ -1,7 +1,16 @@
-pub fn parse_number(str: []const u8) i64 {
-    assert(str.len >= 3); // smallest number is 0.0
-    assert(str.len <= 5); // largest number is -00.0
-    if (std.debug.runtime_safety) assert(mem.count(u8, str, ".") == 1);
+const ParseNumberError = error{
+    @"Number Too Short",
+    @"Number Too Long",
+    @"Number without Period",
+    @"Non-Number Characters",
+};
+
+pub fn parse_number(str: []const u8) ParseNumberError!i64 {
+    if (runtime_safety) {
+        if (str.len < 3) return error.@"Number Too Short";
+        if (str.len > 5) return error.@"Number Too Long";
+        if (mem.count(u8, str, ".") != 1) return error.@"Number without Period";
+    }
 
     const negative = str[0] == '-';
 
@@ -11,8 +20,8 @@ pub fn parse_number(str: []const u8) i64 {
 
     for (str[start..]) |char| {
         if (char == '.') continue;
-        assert(char >= '0');
-        assert(char <= '9');
+
+        if (runtime_safety and char < '0' or char > '9') return error.@"Non-Number Characters";
 
         res *= 10;
         res += char - '0';
@@ -28,18 +37,32 @@ test parse_number {
     const output = [_]i64{ 59, -82, 990, -961 };
 
     for (input, output) |in, out| {
-        try testing.expect(parse_number(in) == out);
+        try testing.expect(try parse_number(in) == out);
     }
 }
 
-pub fn parse_line(map: *HashMap, line: []const u8) !void {
-    assert(line.len > 5); // assert the string exists
+const ParseLineError = error{
+    @"Line Too Short",
+    @"No Semicolon",
+    @"Too Many Semicolons",
+    @"No Name",
+} || ParseNumberError; // || mem.Allocator.Error;
 
-    const semi = mem.indexOfScalar(u8, line, ';').?;
-    assert(semi > 1); // if not, the name is too short
+pub fn parse_line(map: *HashMap, line: []const u8) ParseLineError!void {
+    if (runtime_safety) {
+        if (line.len < 6) return error.@"Line Too Short";
 
-    const name = line[0..semi];
-    const num = parse_number(line[semi + 1 ..]);
+        const semi_count = mem.count(u8, line, ";");
+        if (semi_count > 1) return error.@"Too Many Semicolons";
+        if (semi_count < 1) return error.@"No Semicolon";
+    }
+
+    const semi_pos = mem.indexOfScalar(u8, line, ';').?;
+
+    if (runtime_safety and semi_pos == 0) return error.@"No Name";
+
+    const name = line[0..semi_pos];
+    const num = try parse_number(line[semi_pos + 1 ..]);
 
     map.mutex.lock();
     defer map.mutex.unlock();
@@ -61,59 +84,48 @@ pub fn parse_line(map: *HashMap, line: []const u8) !void {
 test parse_line {
     const input = [_][]const u8{ "test;10.0", "test;20.0", "aaa;-19.0", "bela;-9.0", "lel'ob;2.5", "aaa;20.1", "test;-10.0" };
 
-    var correct_map = HashMapContent.init(testing.allocator);
-    defer correct_map.deinit();
-
-    try correct_map.put("test", .{
+    var names = [_][]const u8{ "test", "aaa", "bela", "lel'ob" };
+    var values = [_]Station{ .{
         .min = -100,
         .max = 200,
         .sum = 200,
         .count = 3,
-    });
-    try correct_map.put("aaa", .{
+    }, .{
         .min = -190,
         .max = 201,
         .sum = 11,
         .count = 2,
-    });
-    try correct_map.put("bela", .{
+    }, .{
         .min = -90,
         .max = -90,
         .sum = -90,
         .count = 1,
-    });
-    try correct_map.put("lel'ob", .{
+    }, .{
         .min = 25,
         .max = 25,
         .sum = 25,
         .count = 1,
-    });
+    } };
 
-    var map = HashMapContent.init(testing.allocator);
-    defer map.deinit();
+    var map = HashMap{};
+    defer map.map.deinit(testing.allocator);
+    try map.map.ensureTotalCapacity(testing.allocator, 4);
 
-    for (input) |in| {
-        try parse_line(&map, in);
-    }
+    for (input) |in| try parse_line(&map, in);
 
-    try testing.expect(correct_map.count() == map.count());
+    try testing.expect(map.map.count() == names.len);
 
-    var iter = correct_map.iterator();
-
-    while (iter.next()) |entry| {
-        const en = map.getPtr(entry.key_ptr.*) orelse try testing.expect(false);
-        try testing.expect(en.min == entry.value_ptr.min);
-        try testing.expect(en.max == entry.value_ptr.max);
-        try testing.expect(en.sum == entry.value_ptr.sum);
-        try testing.expect(en.count == entry.value_ptr.count);
+    for (names, values) |name, value| {
+        const en = map.map.getPtr(name) orelse return error.@"Name not found in map";
+        try testing.expect(std.meta.eql(value, en.*));
     }
 }
 
 pub const HashMap = struct {
-    mutex: std.Thread.Mutex,
-    map: HashMapContent,
+    mutex: std.Thread.Mutex = .{},
+    map: HashMapContent = .{},
 };
-pub const HashMapContent = std.StringArrayHashMap(Station);
+pub const HashMapContent = std.StringArrayHashMapUnmanaged(Station);
 
 pub const Station = struct {
     min: i64,
@@ -123,6 +135,10 @@ pub const Station = struct {
 };
 
 const std = @import("std");
+const debug = std.debug;
 const mem = std.mem;
 const testing = std.testing;
+
 const assert = std.debug.assert;
+const panic = std.debug.panic;
+const runtime_safety = std.debug.runtime_safety;
