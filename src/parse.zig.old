@@ -14,17 +14,11 @@ pub fn parse_number(str: []const u8) ParseNumberError!i64 {
 
     const negative = str[0] == '-';
 
-    var res: i64 = 0;
+    var res: i64 = str[str.len - 1] - '0';
+    res += (str[str.len - 3] - '0') * 10;
 
-    const start = @intFromBool(negative); // skip the negative sign if it exists.
-
-    for (str[start..]) |char| {
-        if (char == '.') continue;
-
-        if (runtime_safety and char < '0' or char > '9') return error.@"Non-Number Characters";
-
-        res *= 10;
-        res += char - '0';
+    if ((str.len == 4 and !negative) or (str.len == 5)) {
+        res += @as(i64, str[str.len - 4] - '0') * 100;
     }
 
     if (negative) res *= -1;
@@ -69,15 +63,9 @@ pub fn parse_line(map: *HashMap, line: []const u8) ParseLineError!void {
     const get = map.map.getOrPutAssumeCapacity(name);
 
     if (get.found_existing) {
-        get.value_ptr.min = @min(get.value_ptr.min, num);
-        get.value_ptr.max = @max(get.value_ptr.max, num);
-        get.value_ptr.sum += num;
-        get.value_ptr.count += 1;
+        get.value_ptr.addMeasurement(num);
     } else {
-        get.value_ptr.min = num;
-        get.value_ptr.max = num;
-        get.value_ptr.sum = num;
-        get.value_ptr.count = 1;
+        get.value_ptr.* = Station{ .min = num, .max = num, .sum = num, .count = 1 };
     }
 }
 
@@ -125,13 +113,20 @@ pub const HashMap = struct {
     mutex: std.Thread.Mutex = .{},
     map: HashMapContent = .{},
 };
-pub const HashMapContent = std.StringArrayHashMapUnmanaged(Station);
+pub const HashMapContent = std.StringHashMapUnmanaged(Station);
 
 pub const Station = struct {
     min: i64,
     max: i64,
     sum: i64,
     count: u64,
+
+    pub fn addMeasurement(self: @This(), num: i64) void {
+        self.min = @min(self.min, num);
+        self.max = @max(self.max, num);
+        self.sum += num;
+        self.count += 1;
+    }
 };
 
 const std = @import("std");

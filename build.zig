@@ -6,16 +6,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "1brc",
+    const main_exe = b.addExecutable(.{
+        .name = "1brz",
         .root_source_file = .{ .path = root_src },
         .target = target,
         .optimize = optimize,
     });
+    b.installArtifact(main_exe);
 
-    b.installArtifact(exe);
-
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(main_exe);
 
     run_cmd.step.dependOn(b.getInstallStep());
 
