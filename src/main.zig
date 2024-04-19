@@ -15,17 +15,22 @@ pub fn main() !void {
     //const stdout = bw.writer();
     //_ = stdout;
 
-    var file = try std.fs.cwd().openFile("measurements.txt", .{ .mode = .read_only }); // measurements.txt
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+    _ = args.next(); // discard program name
+    const file_name = args.next() orelse "measurements.txt";
+
+    var file = try std.fs.cwd().openFile(file_name, .{ .mode = .read_only }); // measurements.txt
     defer file.close();
 
-    const file_length = (try file.metadata()).size();
+    const file_size = (try file.metadata()).size();
 
-    log.info("File length: {}", .{file_length});
+    log.info("File Size: {}", .{file_size});
 
-    const file_contents = try os.mmap(null, file_length, os.PROT.READ, os.MAP.SHARED, file.handle, 0);
+    const file_contents = try os.mmap(null, file_size, os.PROT.READ, os.MAP.SHARED, file.handle, 0);
     defer os.munmap(file_contents);
 
-    if (runtime_safety) assert(file_contents.len == file_length); // should be OS guaranteed
+    if (runtime_safety) assert(file_contents.len == file_size); // should be OS guaranteed
 
     const thread_count = (std.Thread.getCpuCount() catch unreachable);
 
@@ -36,7 +41,7 @@ pub fn main() !void {
         try map.ensureTotalCapacity(allocator, HASH_MAP_SIZE);
     }
 
-    const thread_offset = file_length / thread_count;
+    const thread_offset = file_size / thread_count;
     var end_prev: usize = 0;
 
     for (0..thread_count - 1) |idx| {
