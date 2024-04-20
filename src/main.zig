@@ -41,7 +41,7 @@ pub fn main() !void {
         const thread_list_size = @sizeOf(Thread) * spawn_count;
         const map_list_size = @sizeOf(HashMap) * spawn_count;
 
-        const one_hash_map = (@sizeOf(HashMap.KV) + 75) * HASH_MAP_SIZE; // approximately what each hash map needs
+        const one_hash_map = (@sizeOf(HashMap.KV) * 3) * HASH_MAP_SIZE; // approximately what each hash map needs
 
         const hash_map_size = one_hash_map * (spawn_count + 1);
         const name_list_size = @sizeOf([]const u8) * MAX_UNIQUE_NAMES;
@@ -56,29 +56,27 @@ pub fn main() !void {
 
     var fixed_alloc = std.heap.FixedBufferAllocator{ .end_index = 0, .buffer = fixed_buffer };
 
-    const allocator = if (runtime_safety)
-        (std.heap.ScopedLoggingAllocator(.@"1brz-alloc", .info, .err){ .parent_allocator = fixed_alloc.allocator() }).allocator()
-    else
-        fixed_alloc.allocator();
+    var logging_alloc = std.heap.ScopedLoggingAllocator(.@"1brz-alloc", .info, .err){ .parent_allocator = fixed_alloc.allocator() };
+
+    const allocator = if (runtime_safety) logging_alloc.allocator() else fixed_alloc.allocator();
 
     //// Make Lists
 
-    var thread_list: []Thread = try allocator.alloc(Thread, spawn_count);
-    defer allocator.free(thread_list);
+    var thread_list: []Thread = allocator.alloc(Thread, spawn_count) catch unreachable;
+    //defer allocator.free(thread_list);
 
-    var map_list = try allocator.alloc(HashMap, spawn_count);
-    defer allocator.free(map_list);
+    var map_list = allocator.alloc(HashMap, spawn_count) catch unreachable;
+    //defer allocator.free(map_list);
 
-    for (map_list) |*map| {
-        map.* = .{};
-        try map.ensureTotalCapacity(allocator, HASH_MAP_SIZE);
-    }
-    defer for (map_list) |*map| map.deinit(allocator);
+    //defer for (map_list) |*map| map.deinit(allocator);
 
     const thread_offset = file_size / spawn_count;
     var end_prev: usize = 0;
 
-    for (0..spawn_count) |idx| {
+    for (map_list, 0..) |*map, idx| {
+        map.* = .{};
+        map.ensureTotalCapacity(allocator, HASH_MAP_SIZE) catch unreachable;
+
         const end = mem.indexOfScalarPos(u8, file_contents, end_prev + thread_offset, '\n') orelse file_contents.len;
 
         var buffer = file_contents[end_prev..end];
@@ -90,8 +88,8 @@ pub fn main() !void {
     }
 
     var final_map = HashMap{};
-    try final_map.ensureTotalCapacity(allocator, HASH_MAP_SIZE);
-    defer final_map.deinit(allocator);
+    final_map.ensureTotalCapacity(allocator, HASH_MAP_SIZE) catch unreachable;
+    //defer final_map.deinit(allocator);
 
     for (0..spawn_count) |idx| {
         thread_list[idx].join();
@@ -166,48 +164,49 @@ pub fn process(
 
 const ParseLineError = error{
     @"Line Too Short",
-    @"No Semicolon",
-    @"Too Many Semicolons",
-    @"No Name",
+    @"Line Too Long",
     @"Line Contains Newline",
+    @"Line With No Semicolon",
+    @"Line With Too Many Semicolons",
+    @"Line With No Name",
+    @"Line With No Number",
 };
 
 pub fn process_buffer(map: *HashMap, buffer: []const u8) if (runtime_safety) ParseLineError!usize else void {
     var line_no: usize = 0;
     var start_idx: usize = 0;
 
-    @prefetch(map, .{});
+    @prefetch(map, .{}); // don't think it will help, but yea
     while (true) : (line_no += 1) {
         if (start_idx >= buffer.len) break;
 
-        const end_of_line = mem.indexOfScalarPos(u8, buffer, start_idx + 7, '\n') orelse buffer.len;
+        const end_of_line = mem.indexOfScalarPos(u8, buffer, start_idx + MIN_LINE_SIZE, '\n') orelse buffer.len;
         defer start_idx = end_of_line + 1;
 
         const line = buffer[start_idx..end_of_line];
 
         if (runtime_safety) {
-            if (line.len < 6) return error.@"Line Too Short";
-
-            const semi_count = mem.count(u8, line, ";");
-            if (semi_count < 1) return error.@"No Semicolon";
-            if (semi_count > 1) return error.@"Too Many Semicolons";
+            if (line.len < MIN_LINE_SIZE) return error.@"Line Too Short";
+            if (line.len > MAX_LINE_SIZE) return error.@"Line Too Long";
 
             if (mem.count(u8, line, "\n") > 0) return error.@"Line Contains Newline";
+
+            const semi_count = mem.count(u8, line, ";");
+            if (semi_count < 1) return error.@"Line With No Semicolon";
+            if (semi_count > 1) return error.@"Line With Too Many Semicolons";
         }
 
-        const semi_pos = mem.indexOfScalar(u8, line, ';').?;
+        const semi_pos = mem.indexOfScalarPos(u8, line, 1, ';').?; // semi shouldn't be in position 1
 
-        if (runtime_safety and semi_pos == 0) return error.@"No Name";
+        if (runtime_safety and semi_pos == 0) return error.@"Line With No Name";
+        if (runtime_safety and semi_pos == line.len - 1) return error.@"Line With No Number";
 
         const name = line[0..semi_pos];
         const num_buf = line[semi_pos + 1 ..];
 
-        const num = if (runtime_safety)
-            parse_number(num_buf) catch |err| {
-                std.debug.panic("Failed with {s}, num_buf: '{s}'", .{ @errorName(err), num_buf });
-            }
-        else
-            parse_number(num_buf);
+        const num = parse_number(num_buf) catch |err| {
+            std.debug.panic("Failed with {s}, num_buf: '{s}'", .{ @errorName(err), num_buf });
+        };
 
         const get = map.getOrPutAssumeCapacity(name);
 
@@ -221,22 +220,30 @@ pub fn process_buffer(map: *HashMap, buffer: []const u8) if (runtime_safety) Par
     if (runtime_safety) return line_no;
 }
 
-const ParseNumberError = error{
+const ParseNumberError = if (runtime_safety) error{
     @"Number Too Short",
     @"Number Too Long",
     @"Number Without Period",
-    @"Non-Number Characters",
-};
+    @"Number With Non-Number Characters",
+    @"Number With Too Many Periods",
+    @"Number With Multiple Negative Signs",
+} else error{};
 
-pub fn parse_number(str: []const u8) if (runtime_safety) ParseNumberError!i32 else i32 {
+pub fn parse_number(str: []const u8) ParseNumberError!i32 {
     if (runtime_safety) {
-        if (str.len < 3) return error.@"Number Too Short";
-        if (str.len > 5) return error.@"Number Too Long";
-        if (mem.count(u8, str, ".") != 1) return error.@"Number Without Period";
+        if (str.len < MIN_NUMBER_SIZE) return error.@"Number Too Short";
+        if (str.len > MAX_NUMBER_SIZE) return error.@"Number Too Long";
+
+        const period_count = mem.count(u8, str, ".");
+        if (period_count < 1) return error.@"Number Without Period";
+        if (period_count > 1) return error.@"Number With Too Many Periods";
+
+        if (mem.count(u8, str, "-") > 1) return error.@"Number With Multiple Negative Signs";
+
         for (str) |char| {
             switch (char) {
                 '0'...'9', '.', '-' => {},
-                else => return error.@"Non-Number Characters",
+                else => return error.@"Number With Non-Number Characters",
             }
         }
     }
@@ -329,7 +336,15 @@ const Station = struct {
 
 //// Options
 const runtime_safety = std.debug.runtime_safety;
-const alloc_ahead = true;
+
+const MIN_NAME_SIZE = 1; // single letter names are in spec
+const MAX_NAME_SIZE = 100; // number of bytes
+
+const MIN_NUMBER_SIZE = "0.0".len;
+const MAX_NUMBER_SIZE = "-99.9".len;
+
+const MIN_LINE_SIZE = MIN_NAME_SIZE + 1 + MIN_NUMBER_SIZE;
+const MAX_LINE_SIZE = MAX_NAME_SIZE + 1 + MAX_NUMBER_SIZE;
 
 const HashMap = std.StringHashMapUnmanaged(Station);
 /// the number of unique possible names
